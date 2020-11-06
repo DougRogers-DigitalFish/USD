@@ -1111,128 +1111,110 @@ int ArchFileAccess(const char* path, int mode)
 
 // https://msdn.microsoft.com/en-us/library/windows/hardware/ff552012.aspx
 
-#define MAX_REPARSE_DATA_SIZE  (16 * 1024)
+#if 1
 
-typedef struct _REPARSE_DATA_BUFFER {
-    ULONG   ReparseTag;
-    USHORT  ReparseDataLength;
-    USHORT  Reserved;
-    union {
-        struct {
-            USHORT  SubstituteNameOffset;
-            USHORT  SubstituteNameLength;
-            USHORT  PrintNameOffset;
-            USHORT  PrintNameLength;
-            ULONG   Flags;
-            WCHAR   PathBuffer[1];
-        } SymbolicLinkReparseBuffer;
-        struct {
-            USHORT  SubstituteNameOffset;
-            USHORT  SubstituteNameLength;
-            USHORT  PrintNameOffset;
-            USHORT  PrintNameLength;
-            WCHAR   PathBuffer[1];
-        } MountPointReparseBuffer;
-        struct {
-            UCHAR  DataBuffer[1];
-        } GenericReparseBuffer;
-    };
-} REPARSE_DATA_BUFFER, *PREPARSE_DATA_BUFFER;
-
-std::string ArchReadLink(const char* path)
+std::string 
+ArchReadLink(const char* path)
 {
-    HANDLE handle = ::CreateFile(path, GENERIC_READ, 0, NULL, OPEN_EXISTING,
-        FILE_FLAG_OPEN_REPARSE_POINT |
-        FILE_FLAG_BACKUP_SEMANTICS, NULL);
+	bool success = false;
 
-    if (handle == INVALID_HANDLE_VALUE)
-        return std::string();
+	std::string target = "";
 
-    std::unique_ptr<unsigned char[]> buffer(new
-                               unsigned char[MAX_REPARSE_DATA_SIZE]);
-    REPARSE_DATA_BUFFER* reparse = (REPARSE_DATA_BUFFER*)buffer.get();
+	auto handle = CreateFileA(path, 0, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
 
-    if (!DeviceIoControl(handle, FSCTL_GET_REPARSE_POINT, NULL, 0, reparse,
-                         MAX_REPARSE_DATA_SIZE, NULL, NULL)) {
-        CloseHandle(handle);
-        return std::string();
-    }
-    CloseHandle(handle);
+	if (handle != INVALID_HANDLE_VALUE) {
+		const DWORD maxsize = 32768;
+		const std::unique_ptr<char[]> buffer(new char[maxsize]);
+		const auto rc = GetFinalPathNameByHandleA(handle, buffer.get(), maxsize, 0);
+		if (rc > 0 && rc < maxsize) {
+			char * path = buffer.get();
+			target = std::string(&path[4]);
+			success = true;
+		}
 
-    if (IsReparseTagMicrosoft(reparse->ReparseTag)) {
-        if (reparse->ReparseTag == IO_REPARSE_TAG_SYMLINK) {
-            const size_t length =
-                reparse->SymbolicLinkReparseBuffer.PrintNameLength /
-                                                                sizeof(WCHAR);
-            std::unique_ptr<WCHAR[]> reparsePath(new WCHAR[length + 1]);
-            wcsncpy(reparsePath.get(),
-              &reparse->SymbolicLinkReparseBuffer.PathBuffer[
-              reparse->SymbolicLinkReparseBuffer.PrintNameOffset / sizeof(WCHAR)
-              ], length);
-
-            reparsePath.get()[length] = 0;
-
-            // Convert wide-char to narrow char
-            std::wstring ws(reparsePath.get());
-            string str(ws.begin(), ws.end());
-
-            return str;
-        }
-    }
-
-    return std::string();
+		CloseHandle(handle);
+	}
+	return target;
 }
 
 #else
+// https://msdn.microsoft.com/en-us/library/windows/hardware/ff552012.aspx
 
-std::string
-ArchReadLink(const char* path)
+#define MAX_REPARSE_DATA_SIZE  (16 * 1024)
+
+typedef struct _REPARSE_DATA_BUFFER {
+	ULONG   ReparseTag;
+	USHORT  ReparseDataLength;
+	USHORT  Reserved;
+	union {
+		struct {
+			USHORT  SubstituteNameOffset;
+			USHORT  SubstituteNameLength;
+			USHORT  PrintNameOffset;
+			USHORT  PrintNameLength;
+			ULONG   Flags;
+			WCHAR   PathBuffer[1];
+		} SymbolicLinkReparseBuffer;
+		struct {
+			USHORT  SubstituteNameOffset;
+			USHORT  SubstituteNameLength;
+			USHORT  PrintNameOffset;
+			USHORT  PrintNameLength;
+			WCHAR   PathBuffer[1];
+		} MountPointReparseBuffer;
+		struct {
+			UCHAR  DataBuffer[1];
+		} GenericReparseBuffer;
+	};
+} REPARSE_DATA_BUFFER, *PREPARSE_DATA_BUFFER;
+
+
+std::string ArchReadLink(const char* path)
 {
-    if (!path || !path[0]) {
-        return std::string();
-    }
+	HANDLE handle = ::CreateFile(path, GENERIC_READ, 0, NULL, OPEN_EXISTING,
+		FILE_FLAG_OPEN_REPARSE_POINT |
+		FILE_FLAG_BACKUP_SEMANTICS, NULL);
 
-    // Make a buffer for the link on the heap.
-    // Explicit deleter to work around libc++ bug.
-    // See https://llvm.org/bugs/show_bug.cgi?id=18350.
-    ssize_t size = ARCH_PATH_MAX;
-    std::unique_ptr<char, std::default_delete<char[]> > buffer;
+	if (handle == INVALID_HANDLE_VALUE)
+		return std::string();
 
-    // Read the link.
-    while (true) {
-        // Allocate the buffer.
-        buffer.reset(new char[size]);
-        if (!buffer) {
-            // Not enough memory.
-            return std::string();
-        }
+	std::unique_ptr<unsigned char[]> buffer(new
+		unsigned char[MAX_REPARSE_DATA_SIZE]);
+	REPARSE_DATA_BUFFER* reparse = (REPARSE_DATA_BUFFER*)buffer.get();
 
-        // Read the link.
-        const ssize_t n = readlink(path, buffer.get(), size);
-        if (n == -1) {
-            // We can't read the link.
-            return std::string();
-        }
-        else if (n >= size) {
-            // We don't have enough space.  Find out how much space we need.
-            struct stat sb;
-            if (lstat(path, &sb) == 0) {
-                size = sb.st_size + 1;
-            }
-            else {
-                size *= 2;
-            }
-        }
-        else {
-            // Success.  readlink() doesn't NUL terminate.
-            buffer.get()[n] = '\0';
-            return std::string(buffer.get());
-        }
-    }
+	if (!DeviceIoControl(handle, FSCTL_GET_REPARSE_POINT, NULL, 0, reparse,
+		MAX_REPARSE_DATA_SIZE, NULL, NULL)) {
+		CloseHandle(handle);
+		return std::string();
+	}
+	CloseHandle(handle);
+
+	if (IsReparseTagMicrosoft(reparse->ReparseTag)) {
+		if (reparse->ReparseTag == IO_REPARSE_TAG_SYMLINK) {
+			const size_t length =
+				reparse->SymbolicLinkReparseBuffer.PrintNameLength /
+				sizeof(WCHAR);
+			std::unique_ptr<WCHAR[]> reparsePath(new WCHAR[length + 1]);
+			wcsncpy(reparsePath.get(),
+				&reparse->SymbolicLinkReparseBuffer.PathBuffer[
+					reparse->SymbolicLinkReparseBuffer.PrintNameOffset / sizeof(WCHAR)
+				], length);
+
+			reparsePath.get()[length] = 0;
+
+			// Convert wide-char to narrow char
+			std::wstring ws(reparsePath.get());
+			string str(ws.begin(), ws.end());
+
+			return str;
+		}
+	}
+
+	return std::string();
 }
-
 #endif
 
+#endif
 ARCH_API
 void ArchFileAdvise(
     FILE *file, int64_t offset, size_t count, ArchFileAdvice adv)

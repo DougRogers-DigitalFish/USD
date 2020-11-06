@@ -49,6 +49,11 @@
 #define S_IROTH 0004
 #define S_IXOTH 0001
 typedef int mode_t;
+#include <algorithm>
+#include <string>
+#include <iostream>
+#include <cctype>
+#include <clocale>
 #endif
 
 ARCH_PRAGMA_DEPRECATED_POSIX_NAME
@@ -171,7 +176,9 @@ Setup()
     if (testSymlinks) {
         // Create a symlink to the top-level directory.
         ArchUnlinkFile("link_to_a");
-        TF_AXIOM(TfSymlink("a", "link_to_a"));
+
+		TF_AXIOM(TfIsDir("a"));
+		TF_AXIOM(TfSymlink("a", "link_to_a"));
     }
 
     return true;
@@ -208,7 +215,7 @@ TestTfIsDir()
     if (testSymlinks) {
         ArchUnlinkFile("link-to-dir");
         TfSymlink(knownDirPath, "link-to-dir");
-        TF_AXIOM(!TfIsDir("link-to-dir"));
+        TF_AXIOM(TfIsDir("link-to-dir"));
         TF_AXIOM(TfIsDir("link-to-dir", true));
     }
 
@@ -227,12 +234,64 @@ TestTfIsFile()
     if (testSymlinks) {
         ArchUnlinkFile("link-to-file");
         TfSymlink(knownFilePath, "link-to-file");
-        TF_AXIOM(!TfIsFile("link-to-file"));
+        TF_AXIOM(TfIsFile("link-to-file"));
         TF_AXIOM(TfIsFile("link-to-file", true));
     }
 
     return true;
 }
+
+
+#if defined(ARCH_OS_WINDOWS)
+static bool
+TestTfJunctionWindows()
+{
+	cout << "Testing Windows junctions" << endl;
+
+	TF_AXIOM(TfMakeDir("junction-target"));
+	TF_AXIOM(system("mklink /j junction junction-target") == 0);
+	TF_AXIOM(TfTouchFile("junction/test-file"));
+	TF_AXIOM(TfIsLink("junction"));
+	TF_AXIOM(TfIsDir("junction", false));
+	TF_AXIOM(TfIsDir("junction", true));
+	TF_AXIOM(TfIsFile("junction/test-file", false));
+	TF_AXIOM(TfIsFile("junction/test-file", true));
+	TF_AXIOM(TfDeleteFile("junction-target/test-file"));
+	(void)ArchRmDir("junction");
+	(void)ArchRmDir("junction-target");
+
+	return true;
+}
+
+static bool
+TestTfSymLinkWindows()
+{
+
+	(void)ArchRmDir("symlink");
+	(void)ArchRmDir("symlink-target");
+
+
+	cout << "Testing Windows SymLinks" << endl;
+
+	TF_AXIOM(TfMakeDir("symlink-target"));
+	TF_AXIOM(system("mklink /d symlink symlink-target") == 0);
+	TF_AXIOM(TfTouchFile("symlink/test-file"));
+	TF_AXIOM(TfIsLink("symlink"));
+	TF_AXIOM(TfSymlink("symlink", "symlink-target"));
+
+	TF_AXIOM(TfIsDir("symlink", false));
+	TF_AXIOM(TfIsDir("symlink", true));
+	TF_AXIOM(TfIsFile("symlink/test-file", false));
+	TF_AXIOM(TfIsFile("symlink/test-file", true));
+	TF_AXIOM(TfDeleteFile("symlink-target/test-file"));
+	(void)ArchRmDir("symlink");
+	(void)ArchRmDir("symlink-target");
+
+	return true;
+}
+
+#endif
+
 
 static bool
 TestTfIsWritable()
@@ -267,26 +326,46 @@ TestTfIsDirEmpty()
     return true;
 }
 
+
 static bool
 TestTfSymlink()
 {
-    if (testSymlinks) {
-        cout << "Testing TfSymlink/TfIsLink" << endl;
+	if (testSymlinks) {
+		cout << "Testing TfSymlink/TfIsLink" << endl;
 
-        (void) ArchUnlinkFile("test-symlink");
+		(void)ArchUnlinkFile("test-symlink");
 
-        TF_AXIOM(!TfIsLink(knownNoSuchPath));
-        TF_AXIOM(!TfIsLink(knownFilePath));
-        TF_AXIOM(!TfIsLink(""));
-        TF_AXIOM(TfSymlink(knownFilePath, "test-symlink"));
-        TF_AXIOM(TfIsLink("test-symlink"));
-        TF_AXIOM(TfReadLink("test-symlink") == knownFilePath);
+		TF_AXIOM(!TfIsLink(knownNoSuchPath));
+		TF_AXIOM(!TfIsLink(knownFilePath));
+		TF_AXIOM(!TfIsLink(""));
+		TF_AXIOM(TfSymlink(knownFilePath, "test-symlink"));
+		TF_AXIOM(TfIsLink("test-symlink"));
 
-        (void) ArchUnlinkFile("test-symlink");
-    }
+#if defined(ARCH_OS_WINDOWS)
+		std::string  linkFile = TfReadLink("test-symlink");
 
-    return true;
+		std::transform(linkFile.begin(), linkFile.end(), linkFile.begin(),
+			[](unsigned char c) { return std::tolower(c); });
+
+		std::string  knownFilePathLower = knownFilePath;
+
+		std::transform(knownFilePathLower.begin(), knownFilePathLower.end(), knownFilePathLower.begin(),
+			[](unsigned char c) { return std::tolower(c); });
+
+		TF_AXIOM(linkFile == knownFilePathLower);
+
+#else
+
+		TF_AXIOM(TfReadLink("test-symlink") == knownFilePath);
+#endif
+
+		(void)ArchUnlinkFile("test-symlink");
+	}
+
+	return true;
 }
+
+
 
 static bool
 TestTfDeleteFile()
@@ -675,7 +754,11 @@ Test_TfFileUtils()
            TestTfPathExists() &&
            TestTfIsDir() &&
            TestTfIsFile() &&
-           TestTfIsWritable() &&
+		   TestTfIsWritable() &&
+#if defined(ARCH_OS_WINDOWS)
+			TestTfJunctionWindows() &&
+			TestTfSymLinkWindows() &&
+#endif
            TestTfIsDirEmpty() &&
            TestTfSymlink() &&
            TestTfDeleteFile() &&
