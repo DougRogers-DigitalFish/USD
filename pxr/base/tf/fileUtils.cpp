@@ -64,47 +64,6 @@ using std::vector;
 
 PXR_NAMESPACE_OPEN_SCOPE
 
-#if defined(ARCH_OS_WINDOWS)
-// Test if file exists (attribute == 0) or has or doesn't have particular
-// attributes by testing: (actual & attributes) == expected
-bool
-Tf_HasAttribute(
-    string const& path,
-    bool resolveSymlinks,
-    DWORD attribute,
-    DWORD expected)
-{
-    if (path.empty()) {
-        SetLastError(ERROR_SUCCESS);
-        return false;
-    }
-    const DWORD attribs = GetFileAttributes(path.c_str());
-    if (attribs == INVALID_FILE_ATTRIBUTES) {
-        if (attribute == 0 && GetLastError() == ERROR_FILE_NOT_FOUND) {
-            // Don't report an error if we're just testing existence.
-            SetLastError(ERROR_SUCCESS);
-        }
-        return false;
-    }
-    if (!resolveSymlinks || (attribs & FILE_ATTRIBUTE_REPARSE_POINT) == 0) {
-        return attribute == 0 || (attribs & attribute) == expected;
-    }
-
-    // Read symlinks until we find the real file.
-    return Tf_HasAttribute(TfReadLink(path.c_str()), resolveSymlinks,
-                           attribute, expected);
-}
-
-// Same as above but the bits in attribute must all be set.
-bool
-Tf_HasAttribute(
-    string const& path,
-    bool resolveSymlinks,
-    DWORD attribute)
-{
-    return Tf_HasAttribute(path, resolveSymlinks, attribute, attribute);
-}
-#endif
 
 static bool
 Tf_Stat(string const& path, bool resolveSymlinks, ArchStatType* st = 0)
@@ -131,22 +90,7 @@ Tf_Stat(string const& path, bool resolveSymlinks, ArchStatType* st = 0)
 #endif
 }
 
-bool
-TfPathExists(string const& path, bool resolveSymlinks)
-{
-#if defined(ARCH_OS_WINDOWS)
-    return Tf_HasAttribute(path, resolveSymlinks, 0);
-#else
-    if (Tf_Stat(path, resolveSymlinks)) {
-        return true;
-    }
-    // Reset error code if path doesn't exist.
-    if (errno == ENOENT) {
-        errno = 0;
-    }
-    return false;
-#endif
-}
+
 
 #if defined (ARCH_OS_WINDOWS)
 
@@ -176,36 +120,43 @@ getFileType(bool resolveSymlinks, const std::string& path)
             ft = FileType::FileNotFound;
         }
     }
-    else if (!resolveSymlinks && file_attributes.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) {
+    else if (file_attributes.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) {
+        if (!resolveSymlinks) {
+            WIN32_FIND_DATAA findFileData;
 
-        WIN32_FIND_DATAA findFileData;
+            auto hFindFile = FindFirstFileA(path.c_str(), &findFileData);
 
-        auto hFindFile = FindFirstFileA(path.c_str(), &findFileData);
+            auto reparseTags = findFileData.dwReserved0;
 
-        auto reparseTags = findFileData.dwReserved0;
+            bool mountPoint = findFileData.dwReserved0 == IO_REPARSE_TAG_MOUNT_POINT;
+            bool symLink = findFileData.dwReserved0 == IO_REPARSE_TAG_SYMLINK;
 
-        bool mountPoint = findFileData.dwReserved0 == IO_REPARSE_TAG_MOUNT_POINT;
-        bool symLink = findFileData.dwReserved0 == IO_REPARSE_TAG_SYMLINK;
-
-        if (symLink) {
-            if (file_attributes.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-                ft = FileType::Directory | FileType::Symlink;
+            if (symLink) {
+                if (file_attributes.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+                    ft = FileType::Symlink;
+                    if (path.back() == '/' || (path.back() == '\\')) {
+                        ft |= FileType::Directory;
+                    }
+                }
+                else {
+                    ft = FileType::File | FileType::Symlink;
+                }
+            }
+            else if (mountPoint) {
+                if (file_attributes.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+                    ft = FileType::Directory | FileType::Junction;
+                }
+                else {
+                    // should not occur.  junction to a file
+                    ft = FileType::Unknown;
+                }
             }
             else {
-                ft = FileType::File | FileType::Symlink;
-            }
-        }
-        else if (mountPoint) {
-            if (file_attributes.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-                ft = FileType::Directory | FileType::Junction;
-            }
-            else {
-                // should not occur.  junction to a file
                 ft = FileType::Unknown;
             }
         }
         else {
-            ft = FileType::Unknown;
+            return getFileType(true, TfReadLink(path));
         }
     }
     else if (file_attributes.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
@@ -216,9 +167,25 @@ getFileType(bool resolveSymlinks, const std::string& path)
     }
 
     return ft;
-}
-
+} 
 #endif
+
+bool
+TfPathExists(string const& path, bool resolveSymlinks)
+{
+#if defined(ARCH_OS_WINDOWS)
+    return (getFileType(resolveSymlinks, path) & FileType::FileNotFound) != FileType::FileNotFound;
+#else
+    if (Tf_Stat(path, resolveSymlinks)) {
+        return true;
+    }
+    // Reset error code if path doesn't exist.
+    if (errno == ENOENT) {
+        errno = 0;
+    }
+    return false;
+#endif
+}
 
 bool
 TfIsDir(string const& path, bool resolveSymlinks)

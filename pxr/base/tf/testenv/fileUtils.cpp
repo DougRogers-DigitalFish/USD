@@ -213,12 +213,8 @@ TestTfIsDir()
     if (testSymlinks) {
         ArchUnlinkFile("link-to-dir");
         TfSymlink(knownDirPath, "link-to-dir");
-#if defined(ARCH_OS_WINDOWS)
-        // windows TfIsDir reports a symlink to a directory as a directory as well as a symlink
-        TF_AXIOM(TfIsDir("link-to-dir"));
-#else
+
         TF_AXIOM(!TfIsDir("link-to-dir"));
-#endif
         TF_AXIOM(TfIsDir("link-to-dir", true));
     }
 
@@ -738,8 +734,7 @@ TestTfSymLinkWindows()
         TF_AXIOM(TfTouchFile("symlink/test-file"));
         TF_AXIOM(TfIsLink("symlink"));
 
-        TF_AXIOM(TfIsDir("symlink", false));
-        TF_AXIOM(TfIsDir("symlink", false));
+        TF_AXIOM(!TfIsDir("symlink", false));
         TF_AXIOM(TfIsDir("symlink", true));
         TF_AXIOM(TfIsFile("symlink/test-file", false));
         TF_AXIOM(TfIsFile("symlink/test-file", true));
@@ -757,6 +752,16 @@ TestTfSymLinkWindows()
 }
 
 #endif
+
+static bool
+CleanUp()
+{
+    if (testSymlinks) {
+        (void)ArchRmDir("link_to_a");
+        (void)ArchRmDir("link-to-dir");
+    }
+    return true;
+}
 
 static bool
 Test_TfFileUtils()
@@ -778,7 +783,8 @@ Test_TfFileUtils()
            TestTfWalkDirs() &&
            TestTfListDir() &&
            TestTfRmTree() &&
-           TestTfTouchFile()
+           TestTfTouchFile() && 
+           CleanUp()
            ;
 }
 
